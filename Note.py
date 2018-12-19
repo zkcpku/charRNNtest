@@ -1,4 +1,3 @@
-
 # 模型构建从这里开始
 import torch as t
 from torch.utils.data import DataLoader
@@ -16,8 +15,6 @@ import random
 # import time
 from tensorboardX import SummaryWriter
 
-
-
 # In[9]:
 
 
@@ -25,7 +22,13 @@ class Config(object):
 	# 用来写训练参数
 	use_gpu = True
 	is_debug = False
-	
+	is_train = True
+
+	use_old_model = True
+
+	old_model_path = 'tmp/CharRnn/2018-12-19T-H13M58with_epoch5.model'
+
+
 	# 先是dataset中的参数
 	data_path = 'data/charrnn_data.txt'
 #     with open('tmp/charrnn_data.pickle','rb') as f:
@@ -51,7 +54,10 @@ class Config(object):
 	
 	model_save_path = 'tmp/CharRnn/'
 
-
+	# 验证结果
+	begin_text = '，'
+	top_n = 5
+	text_len = 50
 # In[3]:
 
 
@@ -143,20 +149,100 @@ class CharRnn(nn.Module):
 		return output3,hidden
 
 
+def choose_model(opt):
+	model = CharRnn(opt)
+	if opt.use_gpu:
+		model = model.cuda()
+	if opt.use_old_model:
+		model.load_state_dict(t.load(opt.old_model_path))
 
+		if opt.use_gpu:
+			model = model.cuda()
+		print("use old model:"+ opt.old_model_path)
+		train_set = CharRnnDataset(opt)
+		train_data = DataLoader(train_set, opt.batch_size, True, num_workers=4)
+
+		data = iter(train_data).next()# 获取第一个元素，详见迭代器的用法
+		# print(type(data))
+		x,y = data
+		x = x.long()
+		y = y.long()
+		# print(x , y)
+		if  opt.use_gpu:
+			x = x.cuda()
+			y = y.cuda()
+
+		score, _ = model(x)
+
+		criterion = nn.CrossEntropyLoss()
+		loss = criterion(score,y.view(-1))
+		print("perplexity is: {:.3f}".format(np.exp(float(loss.item() ) ) ) )
+	return model
 
 
 def main():
-	current_time = time.strftime("%Y-%m-%dT-H%HM%M", time.localtime())
-	writer = SummaryWriter()
 
 	USE_CUDA = t.cuda.is_available()
 	device = t.device("cuda" if USE_CUDA else "cpu")
 	print(device)
 
 	opt = Config()
+	if opt.is_train:
+		train(opt)
+	else:
+		# model = choose_model(opt)
+		check(opt)
 
+def pick_top_n(opt,output):
+	top_n = opt.top_n
+
+	top_pred_prob, top_pred_label = t.topk(output, top_n, 1)
+	top_pred_prob /= t.sum(top_pred_prob)
+	top_pred_prob = top_pred_prob.squeeze(0).cpu().numpy()
+	top_pred_label = top_pred_label.squeeze(0).cpu().numpy()
+	c = np.random.choice(top_pred_label, size=1, p=top_pred_prob)
+
+	return c
+
+
+
+
+def check(opt):
+	model = choose_model(opt)
+
+	model = model.eval()
+
+	samples = [opt.char2id[c] for c in opt.begin_text]
+
+	input_text = t.LongTensor(samples)
+	if opt.use_gpu:
+		input_text = input_text.cuda()
+	input_text = input_text.reshape(1,-1)
+	# print(input_text.size())
+	# 预热
+	_, init_state = model(input_text)
+	result = samples
+	model_input = input_text
+	for i in range(opt.text_len):
+	    out, init_state = model(model_input, init_state)
+	    pred = pick_top_n(opt,out.data)
+	    model_input = t.LongTensor(pred)
+	    model_input = model_input.reshape(1,-1)
+	    if opt.use_gpu:
+	        model_input = model_input.cuda()
+	    result.append(pred[0])
+	text = [opt.id2char[e] for e in result]
+	print('Generate text is: {}'.format(text))
+	
+
+
+
+
+
+
+def train(opt):
 	# 试验一下Dataset
+	writer = SummaryWriter()
 	train_set = CharRnnDataset(opt)
 
 
@@ -166,9 +252,7 @@ def main():
 	print(len(train_data))
 	# print("help")
 	# print(train_data)
-	model = CharRnn(opt)
-	if opt.use_gpu:
-		model = model.cuda()
+	model = choose_model(opt)
 
 	criterion = nn.CrossEntropyLoss()
 
@@ -212,13 +296,22 @@ def main():
 				print('\t',model_save_path)
 				t.save(model.state_dict(),model_save_path)
 		except Exception as ex:
+			current_time = time.strftime("%Y-%m-%dT-H%HM%M", time.localtime())
 			print("error with global_step",global_step)
 			print(ex)
 			model_save_path = opt.model_save_path + current_time + 'with_epoch'+str(e+1)+'with_step'+str(global_step) + '.model'
 			print('\t',model_save_path)
 			t.save(model.state_dict(),model_save_path)
 			raise ex
-
+		except KeyboardInterrupt as cc:
+			current_time = time.strftime("%Y-%m-%dT-H%HM%M", time.localtime())
+			print("ctrl-c with global_step",global_step)
+			print(cc)
+			model_save_path = opt.model_save_path + current_time + 'with_epoch'+str(e+1)+'with_step'+str(global_step) + '.model'
+			print('\t',model_save_path)
+			t.save(model.state_dict(),model_save_path)
+			raise cc
+	current_time = time.strftime("%Y-%m-%dT-H%HM%M", time.localtime())
 	model_save_path = opt.model_save_path + current_time + '.model'
 	print('\t',model_save_path)
 	t.save(model.state_dict(),model_save_path)
