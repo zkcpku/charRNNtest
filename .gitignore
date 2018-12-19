@@ -180,3 +180,7 @@ origin_data/
 pic/
 song_generator.ipynb
 jupyter-notebook.lnk
+tmp/
+*.ipynb
+runs/
+data/
